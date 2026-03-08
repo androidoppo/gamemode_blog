@@ -1,245 +1,323 @@
 import requests
 import xml.etree.ElementTree as ET
 import os
-from slugify import slugify
+import markdown
+import subprocess
+import hashlib
+import time
+from bs4 import BeautifulSoup
+
+# =====================
+# CONFIG
+# =====================
 
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 MODEL = "HuggingFaceH4/zephyr-7b-beta"
-
 API_URL = f"https://api-inference.huggingface.co/models/{MODEL}"
 
-headers = {
-"Authorization": f"Bearer {HF_TOKEN}"
+SITE_URL = os.getenv("SITE_URL", "https://example.netlify.app")
+
+HEADERS = {
+    "Authorization": f"Bearer {HF_TOKEN}"
 }
 
-SITE_DIR="site"
-os.makedirs(SITE_DIR,exist_ok=True)
+SITE_DIR = "site"
+MD_DIR = "markdown"
+
+os.makedirs(SITE_DIR, exist_ok=True)
+os.makedirs(MD_DIR, exist_ok=True)
+
+# TCP connection reuse
+session = requests.Session()
 
 # =====================
-# AI呼び出し
+# AI API
 # =====================
 
-def ask_ai(prompt):
+def ask_ai(prompt, retries=3):
 
-    payload={
-    "inputs":prompt,
-    "parameters":{
-    "max_new_tokens":1200
+    payload = {
+        "inputs": prompt,
+        "parameters": {"max_new_tokens": 900}
     }
-    }
 
-    r=requests.post(API_URL,headers=headers,json=payload)
+    for i in range(retries):
 
-    data=r.json()
+        try:
 
-    if isinstance(data,list):
-        return data[0]["generated_text"]
+            r = session.post(API_URL, headers=HEADERS, json=payload, timeout=60)
 
-    return str(data)
+            if r.status_code == 200:
+
+                data = r.json()
+
+                if isinstance(data, list):
+
+                    return clean_ai_text(data[0]["generated_text"])
+
+                return clean_ai_text(str(data))
+
+            print("AI API error:", r.status_code)
+
+        except Exception as e:
+
+            print("AI request failed:", e)
+
+        time.sleep(5)
+
+    return ""
 
 # =====================
-# Google Trends
+# AI TEXT CLEAN
 # =====================
+
+def clean_ai_text(text):
+
+    lines = text.split("\n")
+
+    filtered = []
+
+    for line in lines:
+
+        l = line.lower()
+
+        if l.startswith("sure"):
+            continue
+
+        if l.startswith("here is"):
+            continue
+
+        filtered.append(line)
+
+    return "\n".join(filtered)
+
+# =====================
+# SEARCH API
+# =====================
+
+from pytrends.request import TrendReq
 
 def get_trends():
 
-    url="https://trends.google.com/trends/trendingsearches/daily/rss?geo=JP"
-
-    # Google Trends may reject requests without a browser User-Agent or may return HTML error pages.
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    }
+    print("Fetching trends (pytrends)...")
 
     try:
-        r = requests.get(url, headers=headers, timeout=10)
+
+        pytrends = TrendReq(hl='ja-JP', tz=540)
+
+        df = pytrends.trending_searches(pn='japan')
+
+        topics = df[0].tolist()[:5]
+
+        print("Trends:", topics)
+
+        return topics
+
     except Exception as e:
-        print("[WARN] Failed to fetch trends:", e)
-        return ["テクノロジー", "ライフスタイル", "ビジネス"]
 
-    if r.status_code != 200:
-        print(f"[WARN] Trends request returned status {r.status_code}")
-        return ["テクノロジー", "ライフスタイル", "ビジネス"]
+        print("Trends error:", e)
 
-    try:
-        root = ET.fromstring(r.content)
-    except ET.ParseError as e:
-        snippet = r.text[:200].replace("\n", " ")
-        print(f"[WARN] Failed to parse Trends RSS (first 200 chars): {snippet}")
-        return ["テクノロジー", "ライフスタイル", "ビジネス"]
-
-    topics = []
-    for item in root.iter("title"):
-        topics.append(item.text)
-
-    return topics[:3]
+        return ["AI副業", "生成AI", "Python自動化"]
 
 # =====================
-# タイトルAI
+# SLUG
 # =====================
 
-def generate_title(topic):
+def make_slug(title):
 
-    prompt=f"""
-SEOブログタイトルを作ってください
+    slug = title.lower().replace(" ", "-")
 
-テーマ:{topic}
+    if not slug:
 
-30文字以内
-"""
+        h = hashlib.md5(title.encode()).hexdigest()
 
-    title=ask_ai(prompt)
+        slug = h[:10]
 
-    return title.split("\n")[0].strip()
+    return slug
 
 # =====================
-# 記事生成AI
+# DUPLICATE
 # =====================
 
-def generate_article(topic):
+def already_exists(slug):
 
-    prompt=f"""
+    return os.path.exists(f"{SITE_DIR}/{slug}.html")
+
+# =====================
+# WRITER AI
+# =====================
+
+def writer_ai(topic):
+
+    print("Writer:", topic)
+
+    prompt = f"""
 ブログ記事を書いてください
 
-テーマ:{topic}
+テーマ: {topic}
 
 条件
-・見出し付き
-・1500〜2000文字
+Markdown形式
+見出し付き
+1500文字以上
 """
 
     return ask_ai(prompt)
 
 # =====================
-# 修正AI
+# EDITOR AI
 # =====================
 
-def edit_article(article):
+def editor_ai(md):
 
-    prompt=f"""
-次の記事を改善してください
+    print("Editor")
+
+    prompt = f"""
+次の記事を編集してください
 
 条件
-・読みやすく
-・AIっぽさ削除
-・誤字修正
+読みやすくする
+誤字修正
+AIっぽさ削除
 
-記事
-{article}
+{md}
 """
 
     return ask_ai(prompt)
 
 # =====================
-# HTML生成AI
+# SEO AI
 # =====================
 
-def generate_html(title,article):
+def seo_ai(md):
 
-    prompt=f"""
-次の記事をHTML body形式に変換してください
+    print("SEO")
 
-タイトル
-{title}
+    prompt = f"""
+次の記事をSEO向けに改善してください
 
-記事
-{article}
+条件
+h2構造整理
+重要語を**強調**
+段落を整理
 
-HTMLのみ
+Markdown形式維持
+
+{md}
 """
 
     return ask_ai(prompt)
 
 # =====================
-# CSS生成AI
+# SAVE MARKDOWN
 # =====================
 
-def generate_css():
+def save_markdown(slug, md):
 
-    prompt="""
-シンプルなブログCSSを書いてください
+    path = f"{MD_DIR}/{slug}.md"
 
-レスポンシブ
-読みやすい
-"""
+    with open(path, "w", encoding="utf8") as f:
 
-    return ask_ai(prompt)
+        f.write(md)
+
+    print("Saved MD:", path)
 
 # =====================
-# 保存
+# MARKDOWN → HTML
 # =====================
 
-def save_site(title,html,css):
+def md_to_html(md):
 
-    slug=slugify(title)
+    return markdown.markdown(md)
 
-    html_file=f"{SITE_DIR}/{slug}.html"
-    css_file=f"{SITE_DIR}/{slug}.css"
+# =====================
+# CLEAN HTML
+# =====================
 
-    page=f"""
+def clean_html(html):
+
+    try:
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        return soup.prettify()
+
+    except:
+
+        return html
+
+# =====================
+# SAVE HTML
+# =====================
+
+def save_html(slug, title, html):
+
+    path = f"{SITE_DIR}/{slug}.html"
+
+    page = f"""
 <!DOCTYPE html>
 <html>
 <head>
-
 <meta charset="UTF-8">
-
 <title>{title}</title>
-
-<link rel="stylesheet" href="{slug}.css">
-
 </head>
-
 <body>
 
 {html}
 
 </body>
-
 </html>
 """
 
-    with open(html_file,"w",encoding="utf8") as f:
+    with open(path, "w", encoding="utf8") as f:
+
         f.write(page)
 
-    with open(css_file,"w",encoding="utf8") as f:
-        f.write(css)
-
-    print("created",html_file)
+    print("Saved HTML:", path)
 
 # =====================
-# WordPress投稿
+# SITEMAP
 # =====================
 
-def post_wordpress(title,article):
+def generate_sitemap():
 
-    url="http://localhost/wp-json/wp/v2/posts"
+    print("Generating sitemap")
 
-    user="admin"
-    password="APPLICATION_PASSWORD"
+    urls = []
 
-    data={
-    "title":title,
-    "content":article,
-    "status":"draft"
-    }
+    for f in os.listdir(SITE_DIR):
 
-    requests.post(
-    url,
-    json=data,
-    auth=(user,password)
-    )
+        if f.endswith(".html"):
+
+            urls.append(f"{SITE_URL}/{f}")
+
+    xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
+    xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+
+    for url in urls:
+
+        xml += "<url>\n"
+        xml += f"<loc>{url}</loc>\n"
+        xml += "</url>\n"
+
+    xml += "</urlset>"
+
+    with open(f"{SITE_DIR}/sitemap.xml", "w") as f:
+
+        f.write(xml)
 
 # =====================
-# Netlify deploy
+# GIT PUSH
 # =====================
 
-def deploy_netlify():
+def git_push():
 
-    import subprocess
+    print("Git push")
 
-    subprocess.run(["git","add","."])
-    subprocess.run(["git","commit","-m","AI article"])
-    subprocess.run(["git","push"])
+    subprocess.run(["git", "add", "."])
+    subprocess.run(["git", "commit", "-m", "AI article"])
+    subprocess.run(["git", "push"])
 
 # =====================
 # MAIN
@@ -247,30 +325,48 @@ def deploy_netlify():
 
 def run():
 
-    print("AI Blog Factory Start")
+    print("AI BLOG FACTORY START")
 
-    topics=get_trends()
+    topics = get_trends()
 
     for topic in topics:
 
-        print("topic:",topic)
+        print("----------------")
 
-        title=generate_title(topic)
+        slug = make_slug(topic)
 
-        article=generate_article(topic)
+        if already_exists(slug):
 
-        article=edit_article(article)
+            print("Duplicate skip:", slug)
 
-        html=generate_html(title,article)
+            continue
 
-        css=generate_css()
+        md = writer_ai(topic)
 
-        save_site(title,html,css)
+        if not md:
+            print("Writer failed")
+            continue
 
-        post_wordpress(title,article)
+        md = editor_ai(md)
 
-    deploy_netlify()
+        md = seo_ai(md)
+
+        save_markdown(slug, md)
+
+        html = md_to_html(md)
+
+        html = clean_html(html)
+
+        save_html(slug, topic, html)
+
+        time.sleep(3)
+
+    generate_sitemap()
+
+    git_push()
 
     print("DONE")
 
-run()
+
+if __name__ == "__main__":
+    run()
