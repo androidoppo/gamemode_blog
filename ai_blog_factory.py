@@ -126,15 +126,13 @@ def get_trends():
 
 def make_slug(title):
 
+    import hashlib
+
     slug = title.lower().replace(" ", "-")
 
-    if not slug:
+    h = hashlib.md5(title.encode()).hexdigest()
 
-        h = hashlib.md5(title.encode()).hexdigest()
-
-        slug = h[:10]
-
-    return slug
+    return f"{slug}-{h[:6]}"
 
 # =====================
 # DUPLICATE
