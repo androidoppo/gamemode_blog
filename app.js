@@ -150,14 +150,30 @@ clear.addEventListener("click", () => {
   status.textContent = "クリアしました。";
 });
 
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js", {scope:"./"})
-    .then(() => navigator.serviceWorker.ready)
-    .then(() => location.reload())
-    .catch(error => {
-      status.textContent =
-        "Service Workerを登録できませんでした: " + error.message;
+async function initializeServiceWorker() {
+  if (!("serviceWorker" in navigator)) {
+    throw new Error("このブラウザはService Workerに対応していません。");
+  }
+
+  await navigator.serviceWorker.register("./sw.js", {scope:"./"});
+  await navigator.serviceWorker.ready;
+
+  // 初回アクセスではまだページを制御していない場合があるため、
+  // location.reload() は使わず controllerchange を待つ。
+  if (!navigator.serviceWorker.controller) {
+    await new Promise(resolve => {
+      const timeout = setTimeout(resolve, 3000);
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        clearTimeout(timeout);
+        resolve();
+      }, {once:true});
     });
-} else {
-  status.textContent = "このブラウザはService Workerに対応していません。";
+  }
+
+  status.textContent = "準備完了。Exampleフォルダを選択してください。";
 }
+
+initializeServiceWorker().catch(error => {
+  status.textContent =
+    "Service Workerを登録できませんでした: " + error.message;
+});
