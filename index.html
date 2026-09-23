@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Example Browser Runner</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="app">
+  <h1>Example Browser Runner</h1>
+  <p>Exampleフォルダをブラウザ内だけで読み込み、サーバーへアップロードせずに実行します。</p>
+
+  <label class="picker">
+    Exampleフォルダを選択
+    <input id="folder" type="file" webkitdirectory directory multiple>
+  </label>
+
+  <div class="controls">
+    <select id="entry" disabled></select>
+    <button id="run" disabled>実行</button>
+    <button id="reload" disabled>再読み込み</button>
+    <button id="clear">クリア</button>
+  </div>
+
+  <div id="status">Exampleフォルダを選択してください。</div>
+  <iframe id="preview" title="Example preview"
+    sandbox="allow-scripts allow-forms allow-modals allow-popups"></iframe>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
